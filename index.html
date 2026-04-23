@@ -21,6 +21,7 @@ header{background:var(--dark);padding:12px 16px 0;display:flex;flex-direction:co
 .brand-name{font-family:'Playfair Display',serif;color:var(--light);font-size:19px}
 .brand-name span{color:var(--caramel)}
 .brand-sub{font-size:9px;color:#6a4020;letter-spacing:1.2px;text-transform:uppercase}
+.sync-bar{width:100%;max-width:640px;text-align:right;font-size:10px;padding:2px 4px 4px;font-weight:600;letter-spacing:.3px;transition:color .3s}
 .tabs{display:flex;gap:2px;width:100%;max-width:640px}
 .tab-btn{flex:1;padding:8px 3px;background:transparent;border:none;border-radius:7px 7px 0 0;color:#7a5030;font-family:'DM Sans',sans-serif;font-size:11px;font-weight:600;cursor:pointer;transition:all .2s}
 .tab-btn.active{background:var(--cream);color:var(--dark)}
@@ -192,6 +193,7 @@ main{max-width:640px;margin:0 auto;padding:14px 12px 60px}
       <div class="brand-sub">Sweets &amp; Pastries</div>
     </div>
   </div>
+  <div id="syncStatus" class="sync-bar" style="color:#b8890a">🔄 Loading data…</div>
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('overview',this)">🗓 Overview</button>
     <button class="tab-btn" onclick="switchTab('orders',this)">📦 Orders</button>
@@ -357,12 +359,77 @@ main{max-width:640px;margin:0 auto;padding:14px 12px 60px}
 </div>
 
 <script>
+// ── GOOGLE APPS SCRIPT CONFIG ──
+// Paste your deployed Web App URL here:
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbzcuQppBgBHNHG7L3e2myARODS_qEOGcs7ibdt69_62_ZIx0mBCDagM4yR8gwKrsMT7/exec';
+
 // ── DATA ──
-let orders = JSON.parse(localStorage.getItem('sk_orders')||'[]');
-let expenses = JSON.parse(localStorage.getItem('sk_expenses')||'[]');
-// migrate old orders that lack prep/flavor fields
-orders = orders.map(o=>({prepared:false, flavor:'classic', ...o}));
-function save(){localStorage.setItem('sk_orders',JSON.stringify(orders));localStorage.setItem('sk_expenses',JSON.stringify(expenses));}
+let orders = [];
+let expenses = [];
+let _syncTimer = null;
+
+// Sync status UI
+function setSyncStatus(state, msg) {
+  let el = document.getElementById('syncStatus');
+  if (!el) return;
+  const icons = { syncing: '🔄', ok: '✅', error: '⚠️', offline: '💾' };
+  el.textContent = (icons[state] || '') + ' ' + msg;
+  el.style.color = state === 'error' ? '#b94040' : state === 'ok' ? '#3d7a3d' : '#b8890a';
+}
+
+async function gasRequest(action, payload) {
+  const body = JSON.stringify({ action, ...payload });
+  const res = await fetch(GAS_URL, { method: 'POST', body });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const json = await res.json();
+  if (json.error) throw new Error(json.error);
+  return json;
+}
+
+// Load all data from Google Sheets on startup
+async function loadData() {
+  if (!GAS_URL || GAS_URL === 'YOUR_APPS_SCRIPT_URL_HERE') {
+    // Fallback to localStorage during setup
+    orders = JSON.parse(localStorage.getItem('sk_orders')||'[]');
+    expenses = JSON.parse(localStorage.getItem('sk_expenses')||'[]');
+    orders = orders.map(o=>({prepared:false, flavor:'classic', ...o}));
+    setSyncStatus('offline', 'Using local storage – add your GAS URL to go live');
+    return;
+  }
+  setSyncStatus('syncing', 'Loading data…');
+  try {
+    const data = await gasRequest('load', {});
+    orders = (data.orders || []).map(o=>({prepared:false, flavor:'classic', ...o}));
+    expenses = data.expenses || [];
+    setSyncStatus('ok', 'Synced');
+  } catch(e) {
+    // Fall back to localStorage if offline
+    orders = JSON.parse(localStorage.getItem('sk_orders')||'[]');
+    expenses = JSON.parse(localStorage.getItem('sk_expenses')||'[]');
+    orders = orders.map(o=>({prepared:false, flavor:'classic', ...o}));
+    setSyncStatus('error', 'Offline – showing cached data');
+    console.error('Load error:', e);
+  }
+}
+
+// Save to Google Sheets (debounced 600ms)
+function save() {
+  // Always keep a local cache for offline resilience
+  localStorage.setItem('sk_orders', JSON.stringify(orders));
+  localStorage.setItem('sk_expenses', JSON.stringify(expenses));
+  if (!GAS_URL || GAS_URL === 'YOUR_APPS_SCRIPT_URL_HERE') return;
+  clearTimeout(_syncTimer);
+  setSyncStatus('syncing', 'Saving…');
+  _syncTimer = setTimeout(async () => {
+    try {
+      await gasRequest('save', { orders, expenses });
+      setSyncStatus('ok', 'Saved to Google Sheets');
+    } catch(e) {
+      setSyncStatus('error', 'Save failed – data cached locally');
+      console.error('Save error:', e);
+    }
+  }, 600);
+}
 
 // ── TIME HELPERS ──
 const today=new Date();today.setHours(0,0,0,0);
@@ -706,7 +773,10 @@ function switchTab(name,btn){
 
 // ── INIT ──
 document.getElementById('e_date').value=dk(today);
-renderStrip(0);renderStrip(1);renderOv();renderOrdTab();renderFinance();renderReport();
+(async () => {
+  await loadData();
+  renderStrip(0);renderStrip(1);renderOv();renderOrdTab();renderFinance();renderReport();
+})();
 </script>
 </body>
 </html>
