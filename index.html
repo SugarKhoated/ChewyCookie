@@ -378,12 +378,24 @@ function setSyncStatus(state, msg) {
 }
 
 async function gasRequest(action, payload) {
-  const body = JSON.stringify({ action, ...payload });
-  const res = await fetch(GAS_URL, { method: 'POST', body });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  const json = await res.json();
-  if (json.error) throw new Error(json.error);
-  return json;
+  if (action === 'save') {
+    // Fire-and-forget with no-cors (Apps Script doesn't support CORS headers)
+    // We can't read the response but the save still executes server-side
+    await fetch(GAS_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      body: JSON.stringify({ action, ...payload })
+    });
+    return { status: 'ok' };
+  } else {
+    // For load, use GET with data encoded as query param
+    const encoded = encodeURIComponent(JSON.stringify({ action, ...payload }));
+    const res = await fetch(`${GAS_URL}?data=${encoded}`);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (json.error) throw new Error(json.error);
+    return json;
+  }
 }
 
 // Load all data from Google Sheets on startup
